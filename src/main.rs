@@ -1,36 +1,48 @@
-use std::time::Instant;
+mod engine;
+mod models;
+mod storage;
 
-use reqwest::{Client, Method};
+use std::collections::HashMap;
+
+use engine::HttpManager;
+
+use crate::{
+    models::{ApiRequest, HttpMethod},
+    storage::StorageManager,
+};
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::new();
-    let url = "https://jsonplaceholder.typicode.com/todos/1";
+    // 1. Initialize our managers
+    let http = HttpManager::new();
+    let storage = StorageManager::new(".requestui_db")?;
 
-    println!("Sending Get request to {}...", url);
-    let start_time = Instant::now();
+    // 2. Create a mock request
+    let my_request = ApiRequest {
+        id: "req_123".to_string(),
+        name: "Fetch ToDos".to_string(),
+        url: "https://jsonplaceholder.typicode.com/todos/1".to_string(),
+        method: HttpMethod::GET,
+        headers: HashMap::new(),
+        body: None,
+    };
 
-    // Fire the request
-    let response = client
-        .request(Method::GET, url)
-        .header("User-Agent", "RequestTui/1.0")
-        .send()
-        .await?;
+    // 3. Save the request to Sled
+    println!("Saving request to Sled...");
+    storage.save_request(&my_request)?;
 
-    let duration = start_time.elapsed();
-    let status = response.status();
-    let headers = response.headers().clone();
-    let body = response.text().await?;
+    // 4. Load it back from Sled
+    if let Some(loadded_req) = storage.get_request("req_123")? {
+        println!("Successfully loaded '{}' from database!", loadded_req.name);
 
-    // Output the results
-    println!("\n--- Status: {} ({}ms) ---", status, duration.as_millis());
+        // 5. Fire the request via Reqwest
+        println!("Executing request...");
+        let response = http.execute(loadded_req).await?;
 
-    println!("\n--- Headers ---");
-    for (key, value) in headers.iter() {
-        println!("{}: {:?}", key, value);
+        println!("Status: {}", response.status_code);
+        println!("Response Time: {}ms", response.duration_ms);
+        println!("Body: {}", response.body);
     }
-
-    println!("\n--- Body ---");
-    println!("{}", body);
 
     Ok(())
 }
