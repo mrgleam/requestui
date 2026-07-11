@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::models::{
     ApiRequest, ApiResponse, Collection, CollectionItem, EnvVariable, Environment, Folder,
@@ -83,6 +83,11 @@ pub struct App<'a> {
     // --- Import Popup State ---
     pub import_popup_open: bool,
     pub import_input: tui_textarea::TextArea<'a>,
+
+    // --- Cookie Jar State ---
+    pub cookie_popup_open: bool,
+    pub cookie_input: tui_textarea::TextArea<'a>,
+    pub global_cookies: HashMap<String, String>,
 }
 
 impl<'a> App<'a> {
@@ -115,6 +120,10 @@ impl<'a> App<'a> {
 
             import_popup_open: false,
             import_input: tui_textarea::TextArea::default(),
+
+            cookie_popup_open: false,
+            cookie_input: tui_textarea::TextArea::default(),
+            global_cookies: HashMap::new(),
         };
 
         app.sync_ui_to_selected_node();

@@ -41,6 +41,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if app.import_popup_open {
         render_import_popup(f, app);
     }
+
+    if app.cookie_popup_open {
+        render_cookie_popup(f, app);
+    }
 }
 
 // Helper function to create a centered rectangle for out popup
@@ -62,6 +66,19 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+fn render_cookie_popup(f: &mut Frame, app: &mut App) {
+    let area = centered_rect(50, 50, f.area());
+    f.render_widget(Clear, area);
+
+    app.cookie_input.set_block(
+        Block::default()
+            .title(" 🍪 Global Cookie Jar (Format: key=value, Ctrl+S to save) ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Magenta)),
+    );
+    f.render_widget(&app.cookie_input, area);
 }
 
 fn render_import_popup(f: &mut Frame, app: &mut App) {

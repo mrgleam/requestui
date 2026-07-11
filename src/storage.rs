@@ -1,6 +1,6 @@
 use crate::models::{ApiRequest, Collection, Environment};
 use sled::{Db, IVec, Tree};
-use std::error::Error;
+use std::{collections::HashMap, error::Error};
 
 pub struct StorageManager {
     _db: Db, // Keep the root db alive
@@ -123,5 +123,22 @@ impl StorageManager {
 
     pub fn delete_request(&self, id: &str) -> Result<Option<IVec>, Box<dyn Error>> {
         Ok(self.requests_tree.remove(id.as_bytes())?)
+    }
+
+    pub fn get_global_cookies(&self) -> Result<HashMap<String, String>, Box<dyn Error>> {
+        if let Some(data) = self.collections_tree.get("global_cookies")? {
+            Ok(serde_json::from_slice(&data)?)
+        } else {
+            Ok(HashMap::new())
+        }
+    }
+
+    pub fn save_global_cookies(
+        &self,
+        cookies: &HashMap<String, String>,
+    ) -> Result<(), Box<dyn Error>> {
+        let data = serde_json::to_vec(cookies)?;
+        self.collections_tree.insert("global_cookies", data)?;
+        Ok(())
     }
 }

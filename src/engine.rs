@@ -2,7 +2,7 @@ use std::{collections::HashMap, str::FromStr, time::Instant};
 
 use reqwest::{
     Client, Method,
-    header::{HeaderMap, HeaderName, HeaderValue},
+    header::{HeaderMap, HeaderName, HeaderValue, SET_COOKIE},
 };
 
 use crate::models::{ApiRequest, ApiResponse, BodyType, Environment};
@@ -69,14 +69,32 @@ impl HttpManager {
         let duration_ms = start_time.elapsed().as_millis();
         let status_code = response.status().as_u16();
 
+        // Auto-extract new cookies from the server response
+        let mut extracted_cookies = HashMap::new();
+        for cookie_header in response.headers().get_all(SET_COOKIE) {
+            if let Ok(c_str) = cookie_header.to_str() {
+                // A Set-Cookie string looks like: "session_id=12345; Path=/; HttpOnly"
+                // We only want the first key-value part before the semicolon.
+                if let Some(first_part) = c_str.split(':').next() {
+                    if let Some((k, v)) = first_part.split_once('=') {
+                        extracted_cookies.insert(k.trim().to_string(), v.trim().to_string());
+                    }
+                }
+            }
+        }
+
         // Extract response body
-        let body_text = response.text().await.unwrap_or_default();
+        let body_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Failed to read response boey".to_string());
 
         Ok(ApiResponse {
             status_code,
             headers: HashMap::new(),
             body: body_text,
             duration_ms,
+            new_cookies: extracted_cookies,
         })
     }
 }

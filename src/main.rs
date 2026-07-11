@@ -58,6 +58,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loaded_envs.push(default_env);
     }
 
+    let global_cookies = storage.get_global_cookies().unwrap_or_default();
+
     let my_workspace = match storage.get_collection(root_workspace_id) {
         Ok(Some(saved_collection)) => {
             // Successfuly loaded from Sled!
@@ -87,6 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut app = App::new(my_workspace, loaded_envs);
+    app.global_cookies = global_cookies;
 
     // 2. Setup Channels for Inter-Thread Communication
     let (tx_worker, mut rx_worker) = mpsc::channel::<WorkMessage>(100);
@@ -133,6 +136,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let is_shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
                 // --- POPUP INTERCEPTOR ---
+                if app.cookie_popup_open {
+                    if key.code == KeyCode::Esc {
+                        app.cookie_popup_open = false;
+                        continue;
+                    }
+
+                    if key.code == KeyCode::Char('s') && is_ctrl {
+                        app.global_cookies.clear();
+                        for line in app.cookie_input.lines() {
+                            if let Some((k, v)) = line.split_once('=') {
+                                app.global_cookies
+                                    .insert(k.trim().to_string(), v.trim().to_string());
+                            }
+                        }
+                        let _ = storage.save_global_cookies(&app.global_cookies);
+                        app.status_message = Some("🍪 Cookie Jar saved!".to_string());
+                        app.cookie_popup_open = false;
+                        continue;
+                    }
+                    app.cookie_input.input(key);
+                    continue;
+                }
+
                 if app.import_popup_open {
                     if key.code == KeyCode::Esc {
                         app.import_popup_open = false; // Cancel import 
@@ -523,6 +549,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
 
+                if key.code == KeyCode::Char('g') && is_ctrl {
+                    app.cookie_popup_open = true;
+                    // Format existing cookies into the text editor
+                    let lines: Vec<String> = app
+                        .global_cookies
+                        .iter()
+                        .map(|(k, v)| format!("{}={}", k, v))
+                        .collect();
+                    app.cookie_input = tui_textarea::TextArea::new(lines);
+                    continue;
+                }
+
                 // --- PANE-SPECIFIC CONTROLS ---
                 match app.focus {
                     Focus::Sidebar => {
@@ -568,6 +606,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             parse_headers_from_ui(app.headers_input.lines());
                                         active_req.body.content =
                                             Some(app.body_input.lines().join("\n"));
+
+                                        if !app.global_cookies.is_empty() {
+                                            let cookie_str = app
+                                                .global_cookies
+                                                .iter()
+                                                .map(|(k, v)| format!("{}={}", k, v))
+                                                .collect::<Vec<_>>()
+                                                .join("; ");
+
+                                            active_req
+                                                .headers
+                                                .insert("Cookie".to_string(), cookie_str);
+                                        }
 
                                         // Grab a clone of the active environment, if one is selected
                                         let active_env = app

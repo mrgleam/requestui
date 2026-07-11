@@ -1,4 +1,3 @@
-use crossterm::style;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use regex::Regex;

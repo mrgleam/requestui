@@ -91,4 +91,5 @@ pub struct ApiResponse {
     pub headers: HashMap<String, String>,
     pub body: String,
     pub duration_ms: u128,
+    pub new_cookies: HashMap<String, String>,
 }
