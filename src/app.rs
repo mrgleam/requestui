@@ -1,9 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::models::{
-    ApiRequest, ApiResponse, Collection, CollectionItem, EnvVariable, Environment, Folder,
+    ApiRequest, ApiResponse, Collection, CollectionItem, Environment, Folder,
 };
 use crate::response_viewer::ResponseViewer;
+use crate::vim::VimMode;
 use tui_input::Input;
 use tui_textarea::TextArea;
 
@@ -42,8 +43,8 @@ pub enum WorkMessage {
 
 /// Messages sent from the background HTTP worker back to the TUI
 pub enum UiMessage {
-    RequestStarted,
-    RequestCompleted(Result<ApiResponse, String>),
+    RequestStarted(String),
+    RequestCompleted(String, Result<ApiResponse, String>),
 }
 
 pub struct App<'a> {
@@ -56,6 +57,11 @@ pub struct App<'a> {
     pub is_loading: bool,
     pub status_message: Option<String>,
     pub response_viewer: ResponseViewer,
+
+    // --- Concurrent Request Tracking ---
+    pub active_request_id: Option<String>,
+    pub loading_requests: HashSet<String>,
+    pub responses: HashMap<String, ApiResponse>,
 
     // --- Environment State ---
     pub environments: Vec<Environment>,
@@ -92,6 +98,10 @@ pub struct App<'a> {
 
     // --- Zen Mode State ---
     pub zoom_editor_open: bool,
+
+    // --- Vim State ---
+    pub vim_emulation_active: bool,
+    pub vim_mode: VimMode,
 }
 
 impl<'a> App<'a> {
@@ -130,6 +140,13 @@ impl<'a> App<'a> {
             global_cookies: HashMap::new(),
 
             zoom_editor_open: false,
+
+            active_request_id: None,
+            loading_requests: HashSet::new(),
+            responses: HashMap::new(),
+
+            vim_emulation_active: false,
+            vim_mode: VimMode::Normal, // Start in Normal mode when enabled
         };
 
         app.sync_ui_to_selected_node();
@@ -143,6 +160,10 @@ impl<'a> App<'a> {
 
         // Ensure our index is valid
         if let Some(active_node) = nodes.get(self.selected_node_idx) {
+            self.active_request_id = Some(active_node.id.clone());
+            self.is_loading = self.loading_requests.contains(&active_node.id);
+            self.active_response = self.responses.get(&active_node.id).cloned();
+
             // We only update text areas if the user is highlighting a Request
             if let NodeType::Request(req) = &active_node.node_type {
                 self.url_input = tui_input::Input::default().with_value(req.url.clone());

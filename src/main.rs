@@ -4,9 +4,10 @@ mod formatter;
 mod importer;
 mod models;
 mod parser;
+mod response_viewer;
 mod storage;
 mod ui;
-mod response_viewer;
+mod vim;
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
@@ -26,6 +27,7 @@ use crate::app::{CurrentScreen, Focus, NodeType};
 use crate::models::{
     ApiRequest, BodyType, Collection, CollectionItem, EnvVariable, Folder, HttpMethod, RequestBody,
 };
+use crate::vim::{VimMode, apply_vim_style, handle_vim_key};
 use crate::{
     app::{App, UiMessage, WorkMessage},
     storage::StorageManager,
@@ -102,19 +104,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Some(message) = rx_worker.recv().await {
             match message {
                 WorkMessage::RunRequest(req, env) => {
-                    let _ = tx_ui.send(UiMessage::RequestStarted).await;
-                    match http_manager
-                        .execute(req, env.as_ref())
-                        .await
-                        .map_err(|e| e.to_string())
-                    {
-                        Ok(resp) => {
-                            let _ = tx_ui.send(UiMessage::RequestCompleted(Ok(resp))).await;
+                    let req_id = req.id.clone();
+                    let _ = tx_ui.send(UiMessage::RequestStarted(req_id.clone())).await;
+                    
+                    let http_manager_clone = Arc::clone(&http_manager);
+                    let tx_ui_clone = tx_ui.clone();
+                    
+                    tokio::spawn(async move {
+                        match http_manager_clone
+                            .execute(req, env.as_ref())
+                            .await
+                            .map_err(|e| e.to_string())
+                        {
+                            Ok(resp) => {
+                                let _ = tx_ui_clone.send(UiMessage::RequestCompleted(req_id, Ok(resp))).await;
+                            }
+                            Err(err_str) => {
+                                let _ = tx_ui_clone.send(UiMessage::RequestCompleted(req_id, Err(err_str))).await;
+                            }
                         }
-                        Err(err_str) => {
-                            let _ = tx_ui.send(UiMessage::RequestCompleted(Err(err_str))).await;
-                        }
-                    }
+                    });
                 }
             }
         }
@@ -512,9 +521,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         updated_req.body.body_type
                                     }
                                 }
-                                HttpMethod::GET | HttpMethod::DELETE | HttpMethod::HEAD | HttpMethod::OPTIONS => {
-                                    BodyType::None
-                                }
+                                HttpMethod::GET
+                                | HttpMethod::DELETE
+                                | HttpMethod::HEAD
+                                | HttpMethod::OPTIONS => BodyType::None,
                             };
 
                             updated_req.url = app.url_input.value().to_string();
@@ -560,8 +570,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                             let _ = storage.save_collection(&app.root_collection);
 
-                            app.status_message =
-                                Some(format!("🔄 Body type changed to {:?}", updated_req.body.body_type));
+                            app.status_message = Some(format!(
+                                "🔄 Body type changed to {:?}",
+                                updated_req.body.body_type
+                            ));
                         } else {
                             app.status_message =
                                 Some("⚠️ Cannot change body type of a folder.".to_string());
@@ -667,6 +679,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.status_message =
                             Some("⚠️ You must be in the Body Editor to format JSON.".to_string());
                     }
+                    continue;
+                }
+
+                if key.code == KeyCode::F(4) {
+                    app.vim_emulation_active = !app.vim_emulation_active;
+                    app.vim_mode = VimMode::Normal; // Reset to normal on toggle
+                    let status = if app.vim_emulation_active {
+                        "🟢 Vim Mode Enabled"
+                    } else {
+                        "🔴 Vim Mode Disabled"
+                    };
+                    app.status_message = Some(status.to_string());
                     continue;
                 }
 
@@ -812,20 +836,107 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             app.url_input.handle_event(&Event::Key(key));
                         }
                     },
-                    Focus::HeadersEditor => match key.code {
-                        KeyCode::Esc => app.focus = Focus::Sidebar,
-                        _ => {
-                            app.headers_input.input(key);
+                    Focus::HeadersEditor => {
+                        if app.vim_emulation_active {
+                            apply_vim_style(&mut app.body_input, true, app.vim_mode);
+
+                            if handle_vim_key(&mut app.body_input, key, &mut app.vim_mode) {
+                                if key.code == KeyCode::Esc && app.vim_mode == VimMode::Normal {
+                                    app.zoom_editor_open = false;
+                                    app.focus = Focus::Sidebar;
+                                }
+                                continue;
+                            }
+                        } else {
+                            apply_vim_style(&mut app.body_input, false, app.vim_mode);
                         }
-                    },
-                    Focus::BodyEditor => match key.code {
-                        KeyCode::Esc => {
-                            app.focus = Focus::Sidebar;
+
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.zoom_editor_open = false;
+                                app.focus = Focus::Sidebar;
+                            }
+                            KeyCode::Char('s') if is_ctrl => {
+                                // SAVE LOGIC (Ctrl + S)
+                                let nodes = app.get_visible_nodes();
+                                if let Some(active_node) = nodes.get(app.selected_node_idx) {
+                                    if let NodeType::Request(req) = &active_node.node_type {
+                                        let mut updated_req = req.clone();
+
+                                        updated_req.url = app.url_input.value().to_string();
+                                        updated_req.headers =
+                                            parse_headers_from_ui(app.headers_input.lines());
+                                        updated_req.body.content =
+                                            Some(app.body_input.lines().join("\n"));
+
+                                        app.update_request_in_tree(&updated_req);
+                                        if let Err(e) =
+                                            storage.save_collection(&app.root_collection)
+                                        {
+                                            app.status_message =
+                                                Some(format!("❌ Failed to save headers: {}", e));
+                                        } else {
+                                            app.status_message =
+                                                Some("💾 Headers saved!".to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                app.body_input.input(key);
+                            }
                         }
-                        _ => {
-                            app.body_input.input(key);
+                    }
+                    Focus::BodyEditor => {
+                        if app.vim_emulation_active {
+                            apply_vim_style(&mut app.body_input, true, app.vim_mode);
+
+                            if handle_vim_key(&mut app.body_input, key, &mut app.vim_mode) {
+                                if key.code == KeyCode::Esc && app.vim_mode == VimMode::Normal {
+                                    app.zoom_editor_open = false;
+                                    app.focus = Focus::Sidebar;
+                                }
+                                continue;
+                            }
+                        } else {
+                            apply_vim_style(&mut app.body_input, false, app.vim_mode);
                         }
-                    },
+
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.zoom_editor_open = false;
+                                app.focus = Focus::Sidebar;
+                            }
+                            KeyCode::Char('s') if is_ctrl => {
+                                // SAVE LOGIC (Ctrl + S)
+                                let nodes = app.get_visible_nodes();
+                                if let Some(active_node) = nodes.get(app.selected_node_idx) {
+                                    if let NodeType::Request(req) = &active_node.node_type {
+                                        let mut updated_req = req.clone();
+
+                                        updated_req.url = app.url_input.value().to_string();
+                                        updated_req.headers =
+                                            parse_headers_from_ui(app.headers_input.lines());
+                                        updated_req.body.content =
+                                            Some(app.body_input.lines().join("\n"));
+
+                                        app.update_request_in_tree(&updated_req);
+                                        if let Err(e) =
+                                            storage.save_collection(&app.root_collection)
+                                        {
+                                            app.status_message =
+                                                Some(format!("❌ Failed to save body: {}", e));
+                                        } else {
+                                            app.status_message = Some("💾 Body saved!".to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                app.body_input.input(key);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -833,14 +944,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Process any incoming messages from our network worker thread
         while let Ok(msg) = rx_ui.try_recv() {
             match msg {
-                UiMessage::RequestStarted => {
-                    app.is_loading = true;
-                    app.response_viewer.reset_scroll();
-                    app.active_response = None;
+                UiMessage::RequestStarted(req_id) => {
+                    app.loading_requests.insert(req_id.clone());
+                    if Some(&req_id) == app.active_request_id.as_ref() {
+                        app.is_loading = true;
+                        app.response_viewer.reset_scroll();
+                        app.active_response = None;
+                    }
                 }
-                UiMessage::RequestCompleted(res) => {
-                    app.is_loading = false;
-                    match res {
+                UiMessage::RequestCompleted(req_id, res) => {
+                    app.loading_requests.remove(&req_id);
+                    
+                    let mut display_res = None;
+                    match res.as_ref() {
                         Ok(resp) => {
                             // Update global cookies with any new cookies from the response
                             if !resp.new_cookies.is_empty() {
@@ -849,10 +965,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 let _ = storage.save_global_cookies(&app.global_cookies);
                             }
-                            app.active_response = Some(resp);
-                            app.status_message = Some("✅ Request completed.".to_string());
+                            app.responses.insert(req_id.clone(), resp.clone());
+                            display_res = Some(resp.clone());
                         }
-                        Err(e) => app.status_message = Some(format!("❌ Network Error: {}", e)),
+                        Err(_) => {}
+                    }
+
+                    if Some(&req_id) == app.active_request_id.as_ref() {
+                        app.is_loading = false;
+                        if let Some(r) = display_res {
+                            app.active_response = Some(r);
+                            app.status_message = Some("✅ Request completed.".to_string());
+                        } else if let Err(e) = res {
+                            app.status_message = Some(format!("❌ Network Error: {}", e));
+                        }
                     }
                 }
             }

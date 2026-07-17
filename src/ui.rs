@@ -2,9 +2,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
-    widgets::{
-        Block, Borders, Clear, List, ListItem, Paragraph,
-    },
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
 use crate::app::{App, Focus, NodeType};
@@ -408,7 +406,12 @@ fn render_main_panel(f: &mut Frame, app: &mut App, area: Rect) {
                 f.render_widget(&app.body_input, chunks[2]);
 
                 // Bottom: Response Area
-                app.response_viewer.render(f, chunks[3], app.is_loading, app.active_response.as_ref());
+                app.response_viewer.render(
+                    f,
+                    chunks[3],
+                    app.is_loading,
+                    app.active_response.as_ref(),
+                );
             }
 
             NodeType::Folder { .. } => {
